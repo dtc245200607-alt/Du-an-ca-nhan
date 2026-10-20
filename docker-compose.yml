@@ -1,0 +1,169 @@
+name: de13-portfolio
+services:
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: ["./frontend/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]
+    depends_on: [frontend, backend, grafana, phpmyadmin, prometheus]
+    networks: [edge, db_admin, metrics_proxy]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  frontend:
+    build: ./frontend
+    networks: [edge]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  backend:
+    build: ./backend
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE:-portfolio}
+      DB_USER: ${MYSQL_USER:-portfolio_app}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-D13_App_pw_2026_K8m!vQ2}
+    depends_on:
+      mysql-accounts:
+        condition: service_completed_successfully
+    networks: [edge, monitoring, data]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-portfolio}
+      MYSQL_USER: ${MYSQL_USER:-portfolio_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-D13_App_pw_2026_K8m!vQ2}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in the ignored .env file}
+      MYSQL_EXPORTER_PASSWORD: ${MYSQL_EXPORTER_PASSWORD:-D13_Exporter_pw_2026_J4r!2x}
+    volumes:
+      - mysql_data_v2:/var/lib/mysql
+      - ./backend/mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [data]
+    restart: unless-stopped
+  mysql-accounts:
+    image: mysql:8.4
+    entrypoint: ["/bin/sh", "/scripts/bootstrap-users.sh"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in the ignored .env file}
+      MYSQL_USER: ${MYSQL_USER:-portfolio_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-D13_App_pw_2026_K8m!vQ2}
+      MYSQL_EXPORTER_PASSWORD: ${MYSQL_EXPORTER_PASSWORD:-D13_Exporter_pw_2026_J4r!2x}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-portfolio}
+    volumes: ["./backend/mysql/bootstrap-users.sh:/scripts/bootstrap-users.sh:ro"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks: [data]
+    restart: "no"
+  phpmyadmin:
+    image: phpmyadmin:5.2.2-apache
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_ABSOLUTE_URI: http://localhost:8080/phpmyadmin/
+      UPLOAD_LIMIT: 16M
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks: [data, db_admin]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  mysql-exporter:
+    image: prom/mysqld-exporter:v0.17.2
+    command: ["--mysqld.address=mysql:3306", "--mysqld.username=exporter"]
+    environment:
+      MYSQLD_EXPORTER_PASSWORD: ${MYSQL_EXPORTER_PASSWORD:-D13_Exporter_pw_2026_J4r!2x}
+    depends_on:
+      mysql-accounts:
+        condition: service_completed_successfully
+    networks: [monitoring, data]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes: ["./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro", "prometheus_data:/prometheus"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--web.enable-lifecycle", "--web.external-url=http://localhost:8080/prometheus/", "--web.route-prefix=/"]
+    networks: [monitoring, metrics_proxy]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-D13_Grafana_pw_2026_Q8!dR6w}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:8080/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes: ["grafana_data:/var/lib/grafana", "./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro", "./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro"]
+    networks: [edge, monitoring]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  loki:
+    image: grafana/loki:3.2.1
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes: ["./logging/loki-config.yml:/etc/loki/config.yml:ro", "loki_data:/loki"]
+    networks: [monitoring]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  promtail:
+    image: grafana/promtail:3.2.1
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes: ["./logging/promtail-config.yml:/etc/promtail/config.yml:ro", "/var/lib/docker/containers:/var/lib/docker/containers:ro", "/var/run/docker.sock:/var/run/docker.sock:ro"]
+    networks: [monitoring]
+    depends_on: [loki]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.2
+    privileged: true
+    devices: ["/dev/kmsg"]
+    volumes: ["/:/rootfs:ro", "/var/run:/var/run:ro", "/sys:/sys:ro", "/var/lib/docker:/var/lib/docker:ro", "/dev/disk:/dev/disk:ro"]
+    networks: [monitoring]
+    restart: unless-stopped
+networks:
+  edge: {}
+  monitoring: {internal: true}
+  data: {internal: true}
+  db_admin: {internal: true}
+  metrics_proxy: {internal: true}
+volumes:
+  mysql_data_v2:
+    name: de13-portfolio_mysql_data_v2
+  prometheus_data: {}
+  grafana_data: {}
+  loki_data: {}
+
+
+

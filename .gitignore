@@ -1,0 +1,7 @@
+.env
+node_modules/
+dist/
+*.log
+report/rendered/
+report/update_report.py
+report/report-text.txt

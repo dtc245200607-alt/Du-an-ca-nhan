@@ -1,0 +1,15 @@
+{
+  "name": "de13-portfolio-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "prom-client": "15.1.3",
+    "bcryptjs": "2.4.3",
+    "mysql2": "3.11.5"
+  }
+}
